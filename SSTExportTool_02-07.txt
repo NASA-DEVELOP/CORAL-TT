@@ -1,0 +1,284 @@
+//--------------------------------------------------------------------
+//                        Description
+
+// Master Code for Aqua MODIS SST Interactive Tool
+// OSA Water Resources Project (III)
+// NASA Develop, Fall 2018
+// Adapted from Google Earth Engine Example code for MODIS Ocean Temperature Time Series code
+// Also adapted from NASA DEVELOP Chile Water Resources Team 2017 Summer code
+
+//--------------------------------------------------------------------
+//                    Import and organize data
+//--------------------------------------------------------------------
+
+var sst = ee.ImageCollection('NASA/OCEANDATA/MODIS-Aqua/L3SMI')
+          .select(['sst'])
+          .filterDate('2002-01-01', '2007-12-31');
+
+/*Study years for Aqua Modis seasonal study, you can add future years once the imagery exists and is hosted in Google Earth Engine*/
+var YEARS = {'2002': 2002, '2003': 2003, '2004': 2004, '2005': 2006, '2007': 2007};
+
+
+/*Create dictionary for seasons based on starting month (e.g. 2 is February)*/
+var SEASONS = {2: 2 , 8: 8};
+
+// Create the main map panel and set color palette
+var minTemp = 26
+var maxTemp = 33
+var vis = {min: minTemp, max: maxTemp, palette: '#00abff,#95bd00,e5e700,#cc2900,#a400c3'};
+var mapPanel = ui.Map();
+var layers = mapPanel.layers();
+
+// Import studyArea
+var studyArea = ee.FeatureCollection('users/mbarney/osa_outline');
+
+// Set initial point within the region of interest.
+var initialPoint = ee.Geometry.Point(-83.26, 8.59);
+var outputArea = ee.Geometry.Rectangle ([-83.75, 8.35, -83.05, 8.95]);
+
+//Set season length based on additional months (e.g. if your season lasts 6 months the season length will be 5)
+var seasonLength = 3
+
+//--------------------------------------------------------------------
+//                        Create user panel
+//--------------------------------------------------------------------
+
+// Create a panel to hold title, intro text, chart and legend components.
+var inspectorPanel = ui.Panel({style: {width: '30%'}});
+
+// Create an intro panel with labels.
+var intro = ui.Panel([
+  ui.Label({
+    value: 'MODIS Sea Surface Temperature - Time Series Inspector',
+    style: {fontSize: '20px', fontWeight: 'bold'}
+  }),
+  ui.Label('Click a location to see its time series chart of ocean temperatures. Use the grey arrow in the right upper corner to export the chart as a CSV or PNG file.')
+]);
+inspectorPanel.add(intro);
+
+// Create panels to hold lon/lat values.
+var lon = ui.Label();
+var lat = ui.Label();
+inspectorPanel.add(ui.Panel([lon, lat], ui.Panel.Layout.flow('horizontal')));
+
+// Add placeholders for the chart and legend.
+inspectorPanel.add(ui.Label('[Chart]'));
+inspectorPanel.add(ui.Label('[Legend]'));
+
+// Add title and description for user interface
+var intro = ui.Panel([
+  ui.Label({
+    value: 'MODIS Sea Surface Temperature - Yearly Map Exporter',
+    style: {fontSize: '20px', fontWeight: 'bold'}
+  }),
+  ui.Label('Use the following selection options to display and export a map from a certain year and season.')
+]);
+inspectorPanel.add(intro);
+
+//select year button
+var selectYear = ui.Select({
+  items: Object.keys(YEARS),
+});
+selectYear.setPlaceholder('Select year of study...');
+inspectorPanel.add(ui.Label('1. Select year')).add(selectYear); 
+
+//select season button
+var selectSeason = ui.Select({
+  items: Object.keys(SEASONS),
+});
+selectSeason.setPlaceholder('Select season (start month) of study...');
+inspectorPanel.add(ui.Label('2. Select season')).add(selectSeason); 
+var season_directions = ui.Label
+  ('Please select your seasonal start month. A selection of 2 will display data from February-May, the most intense months of the dry season. A selection of 8 will display data from August-November, the most intense months of the rainy season.', 
+  {margin: '0 0 0 12px',fontSize: '12px',color: 'grey'});
+inspectorPanel.add(season_directions);
+
+
+
+/// Add map output button for display
+
+var mapButton = ui.Label('3. Display SST Map');
+inspectorPanel.add(mapButton);
+inspectorPanel.add(ui.Button("Display Map", showMap));
+var display_directions = ui.Label
+  ('Use this to display your selected seasonal composite in the map panel. If multiple consecutive composites are displayed, use Layers to switch between them.', 
+  {margin: '0 0 0 12px',fontSize: '12px',color: 'gray'});
+inspectorPanel.add(display_directions);
+
+// Add map output button to export .tif file to Google Drive
+var exportButton = ui.Label('4. Export SST Map');
+inspectorPanel.add(exportButton);
+inspectorPanel.add(ui.Button("Export Map",landMap));
+var export_directions = ui.Label
+  ('Classified Imagery may take several minutes to export. Click tasks to export classified image to drive.', 
+  {margin: '0 0 0 12px',fontSize: '12px',color: 'gray'});
+inspectorPanel.add(export_directions);
+// print output user interface
+var outputPanel = ui.Panel();
+print(outputPanel);
+
+
+
+//--------------------------------------------------------------------
+//                      Create chart set up
+//--------------------------------------------------------------------
+
+// Generates a new time series chart of SST for the given coordinates.
+  var generateChart = function (coords) {
+    
+    // Update the lon/lat panel with values from the click event.
+    lon.setValue('lon: ' + coords.lon.toFixed(2));
+    lat.setValue('lat: ' + coords.lat.toFixed(2));
+    
+    // Add a dot for the point clicked on.
+    var point = ee.Geometry.Point(coords.lon, coords.lat);
+    var dot = ui.Map.Layer(point, {color: '000000'}, 'clicked location');
+    
+    // Add the dot as the second layer, so it shows up on top of the composite.
+    mapPanel.layers().set(1, dot);
+    
+    // Make a chart from the time series.
+    var sstChart = ui.Chart.image.series(sst, point, ee.Reducer.median(), 500);
+    
+    // Customize the chart.
+    sstChart.setOptions({
+      title: 'SST time series 2002-2007',
+      vAxis: {title: 'Temp (C)'},
+      hAxis: {title: 'Date (MM-yy)', format: 'MM-yy', gridlines: {count: 6}},
+      series: {
+        0: {
+          color: 'navy',
+          lineWidth: 0,
+          pointsVisible: true,
+          pointSize: 1,
+        },
+      },
+      legend: {position: 'right'},
+    });
+    
+// Add the chart at a fixed position, so that new charts overwrite older ones.
+  inspectorPanel.widgets().set(2, sstChart);
+};
+
+//--------------------------------------------------------------------
+//                        Create legend
+//--------------------------------------------------------------------
+
+// Creates a color bar thumbnail image for use in legend from the given color palette.
+function makeColorBarParams(palette) {
+  return {
+    bbox: [0, 0, 1, 0.1],
+    dimensions: '100x10',
+    format: 'png',
+    min: 0,
+    max: 1,
+    palette: palette,
+  };
+}
+
+// Create the color bar for the legend.
+var colorBar = ui.Thumbnail({
+  image: ee.Image.pixelLonLat().select(0),
+  params: makeColorBarParams(vis.palette),
+  style: {stretch: 'horizontal', margin: '0px 8px', maxHeight: '24px'},
+});
+
+// Create a panel with three numbers for the legend.
+var legendLabels = ui.Panel({
+  widgets: [
+    ui.Label(vis.min, {margin: '4px 8px'}),
+    ui.Label(vis.max, {margin: '4px 8px', textAlign: 'right', stretch: 'horizontal'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+
+var legendTitle = ui.Label({
+  value: 'Map Legend: median SST (C)',
+  style: {fontWeight: 'bold'}
+});
+
+var legendPanel = ui.Panel([legendTitle, colorBar, legendLabels]);
+inspectorPanel.widgets().set(3, legendPanel);
+
+//--------------------------------------------------------------------
+//                Create interactive map features
+//--------------------------------------------------------------------
+
+// Register a callback on the default map to be invoked when the map is clicked.
+mapPanel.onClick(generateChart);
+
+// Configure the map.
+mapPanel.style().set('cursor', 'crosshair');
+
+// Initialize with a test point.
+mapPanel.centerObject(initialPoint, 10);
+
+//--------------------------------------------------------------------
+//                  Create initialization point
+//--------------------------------------------------------------------
+
+// Replace the root with a SplitPanel that contains the inspector and map.
+ui.root.clear();
+ui.root.add(ui.SplitPanel(inspectorPanel, mapPanel));
+
+generateChart({
+  lon: initialPoint.coordinates().get(0).getInfo(),
+  lat: initialPoint.coordinates().get(1).getInfo()
+});
+
+////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////EXPORT CODE ///////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////
+
+// Export the classified image to the Drive (to finish the process, select run in 'Tasks')
+function landMap(){
+    var yearNum = (ee.Number.parse(selectYear.getValue()));
+    var seasonNum = (ee.Number.parse(selectSeason.getValue()));
+    var startDate = ee.Date.fromYMD(yearNum,seasonNum,1);
+    var endDate = ee.Date.fromYMD(yearNum,seasonNum.add(seasonLength),30);
+    
+    function collectImages(){
+      return sst
+            .filterDate(startDate,endDate)
+            .filterBounds(outputArea)
+            .select('sst')
+            .median()
+            .unmask(-9999); 
+    }
+    var allImages = collectImages();
+    Export.image.toDrive({
+      image: allImages,
+      folder: 'GEE_exports',
+      description: 'SST_Composite', //change for each photo
+      scale: 30,
+      region: outputArea
+    });
+}
+
+// Display the selected map on the map panel for the user to view. 
+function showMap(){
+  var yearNum = (ee.Number.parse(selectYear.getValue()));
+  var seasonNum = (ee.Number.parse(selectSeason.getValue()));
+  var startDate = ee.Date.fromYMD(yearNum,seasonNum,1);
+  var endDate = ee.Date.fromYMD(yearNum,seasonNum.add(seasonLength),30);
+  var stringYear = selectYear.getValue();
+  var stringSeason = selectSeason.getValue();
+    if (stringSeason == 2) {
+      stringSeason = 'Dry'
+    }
+    else {
+      stringSeason = 'Rainy'
+    }
+    
+  var vis = {min: minTemp, max: maxTemp, palette: '#00abff,#95bd00,e5e700,#cc2900,#a400c3'};
+  var sstAnnual = sst.select(['sst']).filterDate(startDate, endDate);
+  var composite = sstAnnual.median().visualize(vis).clip(outputArea);
+  var compositeLayer = ui.Map.Layer(composite).setName('SST Composite for ' + stringYear + ': ' + stringSeason);
+    layers.add(compositeLayer, 'Seasonal SST Composite');
+    
+  // Add the gulf outline above that so it shows above everything
+  var outline = ui.Map.Layer(studyArea, {color: 'ffffff'}, 'outline');
+  mapPanel.layers().set(2, outline);
+}
+
+  

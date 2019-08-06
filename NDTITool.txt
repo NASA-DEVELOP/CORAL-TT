@@ -1,0 +1,225 @@
+//--------------------------------------------------------------------
+//                        Description
+//--------------------------------------------------------------------
+// Master Code for Landsat NDTI
+// OSA Water Resources Project (III)
+// NASA Develop, Fall 2018
+
+//--------------------------------------------------------------------
+//                        QA Band
+//--------------------------------------------------------------------
+
+// Apply Quality Assurance (QA) for the Landsat8 image collection
+// (Copied from Google developers tutorial)
+function maskL8sr(image) {
+// Bits 3 and 5 are cloud shadow and cloud, respectively.
+  var cloudShadowBitMask = (1 << 3);
+  var cloudsBitMask = (1 << 5);
+// Get the pixel QA band.
+  var qa = image.select('pixel_qa');
+// Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                 .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+//--------------------------------------------------------------------
+//                  Loading Landsat / calculate NDTI
+//--------------------------------------------------------------------
+// Define Study Area
+
+// Golfo Dulce
+var geometry1 = /* color: #00ffff */ee.Geometry.Polygon(
+        [[[-83.5467529296875, 8.666367420201201],
+          [-83.4545668023759, 8.5244700149549],
+          [-83.2940673828125, 8.370380467910778],
+          [-83.13102996826171, 8.35000000000004],
+          [-83.05071001857476, 8.502660887924105],
+          [-83.05102996826167, 8.639214211082377],
+          [-83.1492248157208, 8.691613945525585],
+          [-83.28059250414674, 8.739494442673303],
+          [-83.34219449287639, 8.774251572143942],
+          [-83.46502431668944, 8.776686632150142],
+          [-83.5456804566154, 8.74801644611116]]]);
+
+// Terraba Sierpe
+var geometry2=ee.Geometry.Polygon([[-83.62425772568696, 8.949467045670827],
+           [-83.64708868889954, 8.789356481972188],
+           [-83.64365546134292, 8.763569466438419],
+           [-83.39302984980031, 8.825998100328574],
+           [-83.43646017836784, 8.949636617198099]]);
+
+// Osa Peninsula
+var geometrymask = /* color: #bf04c2 */ee.Geometry.Polygon(
+        [[[-83.75, 8.95],
+          [-83.75, 8.35],
+          [-83.05, 8.35],
+          [-83.05, 8.95]]]);
+
+    
+var year, geometry, i;
+for (i=1; i<3; i++) {
+for (year=1986; year<2018; year+=5) {
+  if(i===1) {geometry=geometry1;}
+  if(i===2) {geometry=geometry2;}
+  print(year);
+  var yr = year.toString();
+  
+  if (yr < 2000) {
+    var imc = ee.ImageCollection('LANDSAT/LT05/C01/T1_SR')
+      .filterDate(yr+'-08-01', yr+'-11-30')
+      .filterBounds(geometry)
+      .map(maskL8sr);
+  } else if (yr>=2000 & year<2014) {
+    var imc = ee.ImageCollection('LANDSAT/LE07/C01/T1_SR')
+      .filterDate(yr+'-08-01', yr+'-11-30')
+      .filterBounds(geometry)
+      .map(maskL8sr);
+  } else {
+    // Load Landsat 8 image colection and filter date and region of images
+    var imc = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR')
+      .filterDate(yr+'-08-01', yr+'-11-30')
+      .filterBounds(geometry)
+      .map(maskL8sr);
+  }
+  
+  // Calculate median of all images    
+  var im = imc.reduce(ee.Reducer.median());
+  print(im);
+  
+  // Calculating Normalized Difference Turbidity Index (NDTI)
+  if (yr >2014) {
+    // For Landsat 8, B4 = red and B3 = green
+    var ndti = im.normalizedDifference(['B4_median', 'B3_median']).unmask(9999);
+  } else {
+    // For Landsat 5 and 7, B3 = red and B2 = green
+    var ndti = im.normalizedDifference(['B3_median', 'B2_median']).unmask(9999);
+  }
+  print(ndti);
+  //Save Image
+Export.image.toDrive({
+  image: ndti.clip(geometry),
+  description: 'ndti' + yr + '_wet' + i,
+  region: geometry,
+  scale: 30,
+  folder: 'GEE_export',
+});
+  //--------------------------------------------------------------------
+  //                          Add Land Mask
+  //--------------------------------------------------------------------
+  // Add land mask (obtained and slightly modified from GEE tutorial)
+  // Load or import the Hansen et al. forest change dataset.
+  var hansenImage = ee.Image('UMD/hansen/global_forest_change_2015');
+  // Select the land/water mask.
+  var datamask = hansenImage.select('datamask');
+  // Create a binary mask (1 is land and 2 is water)
+  var maskl = datamask.eq(1);
+  // Update the composite mask with the water mask.
+  var maskedLand =im.updateMask(maskl).select('B3_median');
+  var maskedNDTI =ndti.updateMask(maskl).unmask(-9999);
+  // Visualize the defined mask
+  var vismask = {bands: ['B3_median'], max: 0.5,"palette":["000000"]};
+  
+  
+  //--------------------------------------------------------------------
+  //                          Create maps
+  //--------------------------------------------------------------------
+  // Define color palette for NDTI
+  var viz = {min:-0.5, max: 0, palette: ['#00abff','#95bd00','e5e700','#cc2900','#a400c3']};
+  // Apply color palette to calculated NDTI
+  // Map.addLayer(maskedNDTI, null, 'maskedndti2');
+  Map.addLayer(ndti, viz, 'ndti ' +yr);
+  // Add mask to the map
+  if (year > 2015) {
+    Map.addLayer(maskedLand, vismask, 'masked');
+  // Define map center and zoom level
+  Map.setCenter(-83.12, 8.57, 10); // Center on Osa Peninsula
+  }
+}}
+
+
+//--------------------------------------------------------------------
+//                          Color Scale
+//--------------------------------------------------------------------
+
+// Color Scale
+// set position of panel
+var legend = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {
+    position: 'bottom-left',
+    padding: '30x 30px',
+    color: '000000'
+  }
+});
+ 
+// Create legend title
+var legendTitle = ui.Label({
+  value: 'NDTI',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '18px',
+    margin: '0 0 0 0',
+    padding: '0'
+    }
+});
+
+ // Add the title to the panel
+legend.add(legendTitle); 
+
+// create the legend image
+var lon = ee.Image.pixelLonLat().select('latitude');
+var gradient = lon.multiply((viz.max-viz.min)/100.0).add(viz.min);
+var legendImage = gradient.visualize(viz);
+
+// create text on top of legend
+var panel = ui.Panel({
+    widgets: [
+      ui.Label(viz['max'])
+    ],
+  });
+
+legend.add(panel);
+  
+// create thumbnail from the image
+var thumbnail = ui.Thumbnail({
+  image: legendImage,
+    params: {bbox:'0,0,10,100', dimensions:'20x200'},  
+    style: {padding: '1px', position: 'bottom-center'},
+  });
+
+// add the thumbnail to the legend
+legend.add(thumbnail);
+
+// create text on top of legend
+var panel = ui.Panel({
+    widgets: [
+      ui.Label(viz['min'])
+    ],
+   });
+
+legend.add(panel);
+// Add color scale to the map
+Map.add(legend, 'color_scale');
+
+
+//--------------------------------------------------------------------
+//                          Export Images
+//--------------------------------------------------------------------
+
+//Save Image
+Export.image.toDrive({
+  image: maskedLand,
+  description: 'mask_data',
+  region: geometrymask,
+  scale: 30,
+  folder: 'GEE_export',
+});
+//Save Image
+Export.image.toDrive({
+  image: maskedNDTI,
+  description: 'mask_vis',
+  region: geometrymask,
+  scale: 30,
+  folder: 'GEE_export',
+});
